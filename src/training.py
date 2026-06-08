@@ -1,186 +1,171 @@
 """
 training.py
-Handles model training with automatic problem type detection and multiple models.
+Uses AutoGluon TabularPredictor for automated model training.
+AutoGluon automatically handles:
+  - Problem type detection (classification / regression)
+  - Model selection with lightweight-first progressive strategy
+  - Hyperparameter tuning
+  - Ensemble building and stacking
+  - Cross-validation
 """
 
+import os
+import shutil
 import pandas as pd
-import numpy as np
-from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.svm import SVC, SVR
-from sklearn.model_selection import GridSearchCV, cross_val_score
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from autogluon.tabular import TabularPredictor, TabularDataset
 import warnings
 warnings.filterwarnings('ignore')
 
-# Try importing xgboost, but don't fail if not available
-try:
-    from xgboost import XGBClassifier, XGBRegressor
-    XGBOOST_AVAILABLE = True
-except ImportError:
-    XGBOOST_AVAILABLE = False
+
+# Quality presets mapping: maps user-facing names to AutoGluon presets
+# Lightweight-first: default uses only fast, low-resource models
+QUALITY_PRESETS = {
+    'lightweight': 'medium_quality_faster_train',
+    'balanced': 'medium_quality',
+    'best': 'best_quality',
+}
+
+# Restrict model types for lightweight mode so it only uses lightweight models
+# before escalating to more sophisticated / resource-intensive models
+LIGHTWEIGHT_HYPERPARAMETERS = {
+    'GBM': {},            # Lightweight Gradient Boosting
+    'CAT': {},            # CatBoost (handles categoricals well, small footprint)
+    'RF': {'n_estimators': 100},  # Random Forest (lightweight baseline)
+    'LR': {},             # Linear model (fastest, simplest)
+    'XGB': {},            # XGBoost (lightweight config)
+}
+
+BALANCED_HYPERPARAMETERS = {
+    'GBM': {},
+    'CAT': {},
+    'RF': {},
+    'XGB': {},
+    'XT': {},             # Extra Trees
+    'KNN': {},            # K-Nearest Neighbors
+    'LR': {},
+}
+
+# For 'best' quality, we don't restrict hyperparameters — let AutoGluon decide
 
 
-def get_models(problem_type: str) -> dict:
+def run_pipeline(X_train: pd.DataFrame, y_train: pd.Series,
+                 X_test: pd.DataFrame, y_test: pd.Series,
+                 problem_type: str, quality: str = 'lightweight',
+                 time_limit: int = None) -> dict:
     """
-    Return a dictionary of models based on problem type.
-    """
-    models = {}
+    Train models using AutoGluon TabularPredictor.
 
+    Parameters
+    ----------
+    X_train, y_train : Training features and target.
+    X_test, y_test : Test features and target.
+    problem_type : 'classification' or 'regression'.
+    quality : One of 'lightweight', 'balanced', 'best'.
+              Lightweight-first: starts with fast, low-resource models.
+    time_limit : Max training time in seconds (None = no limit).
+
+    Returns
+    -------
+    dict containing:
+      - predictor: the trained TabularPredictor
+      - leaderboard: DataFrame with all model results
+      - model_name: name of the best model
+      - problem_type: detected problem type
+    """
+    # Build the training DataFrame
+    train_data = X_train.copy()
+    train_data['__target__'] = y_train.values
+
+    test_data = X_test.copy()
+    test_data['__target__'] = y_test.values
+
+    # Map quality string to AutoGluon preset
+    preset = QUALITY_PRESETS.get(quality, 'medium_quality_faster_train')
+
+    # Determine hyperparameters based on quality
+    hyperparameters = None
+    if quality == 'lightweight':
+        hyperparameters = LIGHTWEIGHT_HYPERPARAMETERS
+    elif quality == 'balanced':
+        hyperparameters = BALANCED_HYPERPARAMETERS
+    # 'best' uses AutoGluon's default (all models, full search)
+
+    # Use a temp directory for AutoGluon model output (cleaned up after)
+    model_dir = os.path.join(os.path.dirname(__file__), '..', 'autogluon_models')
+    if os.path.exists(model_dir):
+        shutil.rmtree(model_dir)
+
+    # Determine AutoGluon problem type
+    # AutoGluon uses: 'binary', 'multiclass', 'regression', 'quantile'
+    # Our pipeline uses: 'classification', 'regression'
     if problem_type == 'classification':
-        models['Logistic Regression'] = LogisticRegression(max_iter=1000, random_state=42)
-        models['Random Forest'] = RandomForestClassifier(n_estimators=100, random_state=42)
-        if XGBOOST_AVAILABLE:
-            models['XGBoost'] = XGBClassifier(n_estimators=100, random_state=42, verbosity=0)
-        models['SVM'] = SVC(kernel='rbf', probability=True, random_state=42)
-    else:  # regression
-        models['Linear Regression'] = LinearRegression()
-        models['Ridge Regression'] = Ridge(alpha=1.0, random_state=42)
-        models['Lasso Regression'] = Lasso(alpha=1.0, random_state=42)
-        models['Random Forest'] = RandomForestRegressor(n_estimators=100, random_state=42)
-        if XGBOOST_AVAILABLE:
-            models['XGBoost'] = XGBRegressor(n_estimators=100, random_state=42, verbosity=0)
+        # Determine if binary or multiclass based on target unique count
+        unique_count = y_train.nunique()
+        ag_problem_type = 'binary' if unique_count == 2 else 'multiclass'
+    else:
+        ag_problem_type = 'regression'
 
-    return models
-
-
-def get_param_grids(problem_type: str) -> dict:
-    """
-    Return hyperparameter grids for tuning.
-    Small grids for reasonable execution time.
-    """
-    grids = {}
-
-    if problem_type == 'classification':
-        grids['Logistic Regression'] = {
-            'C': [0.1, 1.0, 10.0],
-            'solver': ['lbfgs', 'liblinear']
-        }
-        grids['Random Forest'] = {
-            'n_estimators': [50, 100],
-            'max_depth': [None, 10, 20],
-            'min_samples_split': [2, 5]
-        }
-        if XGBOOST_AVAILABLE:
-            grids['XGBoost'] = {
-                'n_estimators': [50, 100],
-                'max_depth': [3, 6],
-                'learning_rate': [0.01, 0.1]
-            }
-    else:  # regression
-        grids['Random Forest'] = {
-            'n_estimators': [50, 100],
-            'max_depth': [None, 10, 20],
-            'min_samples_split': [2, 5]
-        }
-        if XGBOOST_AVAILABLE:
-            grids['XGBoost'] = {
-                'n_estimators': [50, 100],
-                'max_depth': [3, 6],
-                'learning_rate': [0.01, 0.1]
-            }
-
-    return grids
-
-
-def scale_features(X_train, X_test):
-    """
-    Standardize features using StandardScaler.
-    """
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    return X_train_scaled, X_test_scaled, scaler
-
-
-def train_models(X_train, y_train, problem_type: str, tune: bool = False) -> dict:
-    """
-    Train multiple models and return trained models with their names.
-    If tune=True, perform hyperparameter tuning on applicable models.
-    """
-    models = get_models(problem_type)
-    param_grids = get_param_grids(problem_type)
-    trained_models = {}
-    training_results = []
-
-    for name, model in models.items():
-        result = {'model_name': name}
-
-        try:
-            if tune and name in param_grids:
-                # Hyperparameter tuning
-                grid = GridSearchCV(model, param_grids[name], cv=3, scoring='accuracy' if problem_type == 'classification' else 'r2', n_jobs=-1)
-                grid.fit(X_train, y_train)
-                trained_models[name] = grid.best_estimator_
-                result['best_params'] = grid.best_params_
-                result['tuned'] = True
-            else:
-                model.fit(X_train, y_train)
-                trained_models[name] = model
-                result['tuned'] = False
-
-            result['success'] = True
-        except Exception as e:
-            result['success'] = False
-            result['error'] = str(e)
-            continue
-
-        training_results.append(result)
-
-    return trained_models, training_results
-
-
-def cross_validate(model, X_train, y_train, problem_type: str, cv: int = 5) -> dict:
-    """
-    Perform cross-validation and return scores.
-    """
-    scoring = 'accuracy' if problem_type == 'classification' else 'r2'
+    # For evaluation metric, align with standard names
+    eval_metric = 'accuracy' if problem_type == 'classification' else 'r2'
 
     try:
-        scores = cross_val_score(model, X_train, y_train, cv=cv, scoring=scoring)
-        return {
-            'cv_scores': scores,
-            'cv_mean': scores.mean(),
-            'cv_std': scores.std(),
-            'cv_min': scores.min(),
-            'cv_max': scores.max()
-        }
+        predictor = TabularPredictor(
+            label='__target__',
+            path=model_dir,
+            problem_type=ag_problem_type,
+            eval_metric=eval_metric,
+        )
+
+        predictor.fit(
+            train_data=TabularDataset(train_data),
+            presets=preset,
+            hyperparameters=hyperparameters,
+            time_limit=time_limit,
+            verbosity=0,
+        )
+
+        # Get leaderboard on test data
+        leaderboard = predictor.leaderboard(test_data, silent=True)
+
+        # Get best model name
+        model_name = predictor.model_best
+
     except Exception as e:
-        return {
-            'cv_scores': None,
-            'error': str(e)
-        }
-
-
-def run_pipeline(X_train, y_train, X_test, y_test, problem_type: str,
-                 tune: bool = False, scale: bool = True) -> dict:
-    """
-    Run the full training pipeline.
-    """
-    # Scale features if needed (for SVM, Logistic Regression, Linear models)
-    scaler = None
-    if scale and problem_type in ['classification']:
-        # Scale for models that need it
-        X_train_scaled, X_test_scaled, scaler = scale_features(X_train, X_test)
-    else:
-        X_train_scaled, X_test_scaled = X_train, X_test
-
-    # Train models
-    trained_models, training_results = train_models(
-        X_train_scaled if scale else X_train,
-        y_train, problem_type, tune
-    )
-
-    # Cross-validation for each model
-    cv_results = {}
-    for name, model in trained_models.items():
-        cv_results[name] = cross_validate(model, X_train_scaled, y_train, problem_type)
+        # Clean up on error
+        if os.path.exists(model_dir):
+            shutil.rmtree(model_dir)
+        raise e
 
     return {
-        'trained_models': trained_models,
-        'training_results': training_results,
-        'cv_results': cv_results,
-        'scaler': scaler,
-        'X_train_scaled': X_train_scaled,
-        'X_test_scaled': X_test_scaled
+        'predictor': predictor,
+        'leaderboard': leaderboard,
+        'model_name': model_name,
+        'problem_type': problem_type,
+        'model_dir': model_dir,
     }
+
+
+def get_model_summary(predictor) -> dict:
+    """
+    Return a summary of all trained models from the predictor.
+    """
+    leaderboard = predictor.leaderboard(silent=True)
+    summary = {
+        'num_models': len(leaderboard),
+        'best_model': predictor.model_best,
+        'leaderboard': leaderboard,
+    }
+    return summary
+
+
+def cleanup(predictor_or_dir):
+    """
+    Clean up AutoGluon model directory after pipeline completes.
+    """
+    if isinstance(predictor_or_dir, str):
+        model_dir = predictor_or_dir
+    else:
+        model_dir = predictor_or_dir.path
+
+    if model_dir and os.path.exists(model_dir):
+        shutil.rmtree(model_dir, ignore_errors=True)

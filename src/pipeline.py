@@ -1,7 +1,7 @@
 """
 pipeline.py
-Main orchestrator for BlackBox AutoML.
-Runs the complete pipeline: load → clean → split → train → evaluate → recommend → generate notebook.
+Main orchestrator for BlackBox AutoML — AutoGluon Edition.
+Runs the complete pipeline: load → clean → split → train (AutoGluon) → evaluate → recommend → generate notebook.
 """
 
 import os
@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_cleaning import load_csv, run_pipeline as clean_pipeline
 from src.data_split import run_pipeline as split_pipeline
-from src.training import run_pipeline as train_pipeline
-from src.prediction import run_pipeline as eval_pipeline, find_best_model
+from src.training import run_pipeline as train_pipeline, cleanup as cleanup_autogluon
+from src.prediction import run_pipeline as eval_pipeline
 from src.recommendation import run_pipeline as recommend_pipeline
 from src.notebook_generator import generate_notebook
 
@@ -43,7 +43,7 @@ def find_csv_file(input_dir: str = 'input') -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='BlackBox AutoML - Automated Machine Learning Pipeline'
+        description='BlackBox AutoML - Automated Machine Learning Pipeline (AutoGluon)'
     )
     parser.add_argument('--input', '-i', type=str, default=None,
                         help='Path to input CSV file. If not provided, scans input/ folder.')
@@ -53,10 +53,11 @@ def main():
                         help='Target column name. Auto-detected if not provided.')
     parser.add_argument('--test-size', type=float, default=0.2,
                         help='Test set size ratio (default: 0.2)')
-    parser.add_argument('--tune', action='store_true',
-                        help='Perform hyperparameter tuning (slower, better results)')
-    parser.add_argument('--no-scale', action='store_true',
-                        help='Disable feature scaling')
+    parser.add_argument('--quality', '-q', type=str, default='lightweight',
+                        choices=['lightweight', 'balanced', 'best'],
+                        help='Model quality preset: lightweight (fast, default), balanced, best (full AutoGluon)')
+    parser.add_argument('--time-limit', type=int, default=None,
+                        help='Time limit for AutoGluon training in seconds (default: no limit)')
     parser.add_argument('--missing-strategy', type=str, default='auto',
                         choices=['auto', 'mean', 'median', 'mode', 'drop'],
                         help='Strategy for handling missing values')
@@ -68,7 +69,7 @@ def main():
 
     # ========== STEP 0: Find input file ==========
     print("=" * 60)
-    print("  🤖 BlackBox AutoML Pipeline")
+    print("  🤖 BlackBox AutoML Pipeline (AutoGluon)")
     print("=" * 60)
 
     if args.input:
@@ -85,6 +86,7 @@ def main():
             sys.exit(1)
 
     print(f"\n📂 Input file: {csv_path}")
+    print(f"⚙️  Quality preset: {args.quality}")
     dataset_name = os.path.splitext(os.path.basename(csv_path))[0]
 
     # Create output directory if it doesn't exist
@@ -122,23 +124,41 @@ def main():
     print(f"   Training set: {split_data['X_train'].shape}")
     print(f"   Testing set: {split_data['X_test'].shape}")
 
-    # ========== STEP 3: Train Models ==========
+    # ========== STEP 3: Train Models (AutoGluon) ==========
     print("\n" + "─" * 40)
-    print("  Step 3: Model Training")
+    print("  Step 3: AutoGluon Training")
     print("─" * 40)
+
+    print(f"   Quality: {args.quality}")
+    if args.time_limit:
+        print(f"   Time limit: {args.time_limit}s")
+    print(f"   Training models (lightweight-first strategy)...")
 
     train_results = train_pipeline(
         split_data['X_train'], split_data['y_train'],
         split_data['X_test'], split_data['y_test'],
         split_data['problem_type'],
-        tune=args.tune,
-        scale=not args.no_scale
+        quality=args.quality,
+        time_limit=args.time_limit
     )
-    print(f"   Models trained: {len(train_results['trained_models'])}")
-    for result in train_results['training_results']:
-        status = "✅" if result['success'] else "❌"
-        tuned = " (tuned)" if result.get('tuned') else ""
-        print(f"   {status} {result['model_name']}{tuned}")
+
+    # Display number of models trained
+    lb = train_results['leaderboard']
+    num_models = len(lb)
+    print(f"   ✅ AutoGluon trained {num_models} models")
+    print(f"   🏆 Best model (AutoGluon): {train_results['model_name']}")
+
+    # Show top models from leaderboard
+    print(f"\n   📊 Leaderboard (top 5):")
+    score_cols = [c for c in lb.columns if c not in [
+        'model', 'score_val', 'pred_time_val', 'fit_time',
+        'pred_time_test', 'fit_time_marginal', 'pred_time_val_marginal',
+        'pred_time_test_marginal', 'stack_level', 'can_infer', 'fit_order'
+    ]]
+    score_name = score_cols[0] if score_cols else 'score_test'
+    for idx, row in lb.head(5).iterrows():
+        score_val = row.get(score_name, row.get('score_test', 'N/A'))
+        print(f"      {idx+1}. {row['model']}: {score_val:.4f}")
 
     # ========== STEP 4: Evaluate Models ==========
     print("\n" + "─" * 40)
@@ -147,19 +167,21 @@ def main():
 
     feature_names = list(split_data['X_encoded'].columns)
     eval_results = eval_pipeline(
-        train_results['trained_models'],
-        train_results['X_test_scaled'],
+        train_results['predictor'],
+        split_data['X_test'],
         split_data['y_test'],
         split_data['problem_type'],
-        feature_names
+        feature_names=feature_names,
+        best_model_hint=train_results['model_name']
     )
 
-    best_model_name, best_metrics = find_best_model(eval_results['all_metrics'], split_data['problem_type'])
-    if best_model_name:
+    best_model_name = eval_results.get('best_model_name')
+    if best_model_name and best_model_name in eval_results.get('all_metrics', {}):
+        best_metrics = eval_results['all_metrics'][best_model_name]
         score = best_metrics.get('accuracy' if split_data['problem_type'] == 'classification' else 'r2', 0)
         print(f"   🏆 Best model: {best_model_name} (score: {score:.4f})")
     else:
-        print("   ⚠️ No models were successfully trained.")
+        print("   ⚠️ No models were successfully evaluated.")
 
     # ========== STEP 5: Generate Recommendations ==========
     print("\n" + "─" * 40)
@@ -169,7 +191,7 @@ def main():
     recommendations = recommend_pipeline(
         eval_results['all_metrics'],
         split_data['problem_type'],
-        cv_results=train_results['cv_results'],
+        leaderboard=train_results['leaderboard'],
         feature_importance=eval_results['feature_importance']
     )
 
@@ -186,13 +208,16 @@ def main():
         cleaning_steps=cleaning_steps,
         info=info,
         split_data=split_data,
-        training_results=train_results['training_results'],
-        cv_results=train_results['cv_results'],
+        training_results=train_results,
+        cv_results={},  # AutoGluon handles CV internally; we use leaderboard instead
         eval_results=eval_results,
         recommendations=recommendations,
         output_path=args.output,
         dataset_name=dataset_name
     )
+
+    # ========== CLEANUP: Remove AutoGluon temp model dir ==========
+    cleanup_autogluon(train_results.get('predictor'))
 
     print(f"\n{'=' * 60}")
     print(f"  ✅ Pipeline Complete!")

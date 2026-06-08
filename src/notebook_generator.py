@@ -400,90 +400,190 @@ def generate_training_section(training_results: dict, cv_results: dict, split_da
     cells = []
     problem_type = split_data['problem_type']
 
+    # Determine if we're using AutoGluon (new) or manual (old) training results
+    is_autogluon = 'predictor' in training_results or 'leaderboard' in training_results
+
     cells.append(create_markdown_cell(
         f"## 🧠 Step 4: Model Training\n\n"
         f"Training multiple {problem_type} models to find the best performer. "
-        f"We train each model on the training data and evaluate using cross-validation."
+        f"{'We use **AutoGluon** — an automated ML framework that handles model selection, '
+         'hyperparameter tuning, ensembling, and cross-validation automatically.' if is_autogluon
+         else 'We train each model on the training data and evaluate using cross-validation.'}"
     ))
 
     # Models trained
-    cells.append(create_markdown_cell(
-        "### 🤖 Models Trained\n\n"
-        "The following models were trained:\n"
-        + "\n".join([f"- {r['model_name']}" for r in training_results if r['success']])
-    ))
+    if is_autogluon:
+        lb = training_results.get('leaderboard')
+        if lb is not None:
+            num_models = len(lb)
+            best_model = training_results.get('model_name', 'N/A')
+            model_list = "\n".join([f"- {row['model']}" for _, row in lb.iterrows()])
+            cells.append(create_markdown_cell(
+                "### 🤖 Models Trained (AutoGluon)\n\n"
+                f"A total of **{num_models} models** were trained:\n\n"
+                f"{model_list}\n\n"
+                f"🏆 **Best Model**: `{best_model}`"
+            ))
 
-    # Cross-validation results table
-    if cv_results:
-        cells.append(create_markdown_cell(
-            "### 📊 Cross-Validation Results\n\n"
-            "Cross-validation provides a more robust estimate of model performance by "
-            "training and evaluating on multiple data splits."
-        ))
+        # Display AutoGluon Leaderboard
+        if lb is not None:
+            cells.append(create_markdown_cell(
+                "### 📊 AutoGluon Leaderboard\n\n"
+                "The leaderboard shows all trained models ranked by performance. "
+                "AutoGluon automatically applies cross-validation and ranks models "
+                "by their validation score."
+            ))
 
-        cv_table_data = []
-        for name, cv in cv_results.items():
-            if cv.get('cv_scores') is not None:
-                cv_table_data.append({
-                    'Model': name,
-                    'CV Mean': f"{cv['cv_mean']:.4f}",
-                    'CV Std': f"{cv['cv_std']:.4f}",
-                    'CV Min': f"{cv['cv_min']:.4f}",
-                    'CV Max': f"{cv['cv_max']:.4f}"
-                })
+            # Format leaderboard for display
+            display_cols = [c for c in lb.columns
+                            if c not in ['fit_time_marginal', 'pred_time_val_marginal',
+                                         'pred_time_test_marginal', 'stack_level',
+                                         'can_infer', 'fit_order']]
+            lb_display = lb[display_cols].round(4) if len(display_cols) > 0 else lb.round(4)
 
-        if cv_table_data:
-            cv_df = pd.DataFrame(cv_table_data)
-            cv_html = cv_df.to_html(classes='table table-striped', border=0, index=False)
+            lb_html = lb_display.to_html(classes='table table-striped', border=0, index=False)
             cells.append(create_code_cell(
-                "# Cross-validation results summary\n"
+                "# AutoGluon leaderboard — all model results\n"
                 "import pandas as pd\n"
-                "# Results summarized below",
+                "leaderboard = predictor.leaderboard(test_data, silent=True)\n"
+                "leaderboard",
                 [{
                     'output_type': 'execute_result',
                     'data': {
-                        'text/html': [cv_html],
-                        'text/plain': [cv_df.to_string()]
+                        'text/html': [lb_html],
+                        'text/plain': [lb_display.to_string()]
                     },
                     'metadata': {},
                     'execution_count': None
                 }]
             ))
 
-            # CV comparison chart
-            fig, ax = plt.subplots(figsize=(10, 5))
-            models = [d['Model'] for d in cv_table_data]
-            means = [float(d['CV Mean']) for d in cv_table_data]
-            stds = [float(d['CV Std']) for d in cv_table_data]
+            # Leaderboard bar chart (top models)
+            score_cols = [c for c in lb.columns
+                          if c not in ['model', 'score_val', 'pred_time_val',
+                                       'fit_time', 'pred_time_test',
+                                       'fit_time_marginal', 'pred_time_val_marginal',
+                                       'pred_time_test_marginal', 'stack_level',
+                                       'can_infer', 'fit_order']]
+            score_name = score_cols[0] if score_cols else 'score_test'
 
-            colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(models)))
-            bars = ax.barh(range(len(models)), means, xerr=stds, color=colors, capsize=5)
-            ax.set_yticks(range(len(models)))
-            ax.set_yticklabels(models)
-            ax.set_xlabel('Cross-Validation Score')
-            ax.set_title(f'Model Comparison — {problem_type.title()}', fontsize=14, fontweight='bold')
-            ax.set_xlim(0, min(1.1, max(means) * 1.3))
+            top_n = min(10, len(lb))
+            top_models = lb.head(top_n)
 
-            for bar, mean, std in zip(bars, means, stds):
-                ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
-                        f'{mean:.4f} ± {std:.4f}', va='center', fontsize=10)
+            fig, ax = plt.subplots(figsize=(10, max(5, top_n * 0.4)))
+            model_names = list(top_models['model'])
+            scores = [float(top_models[score_name].iloc[i]) for i in range(len(top_models))]
+
+            colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(model_names)))
+            bars = ax.barh(range(len(model_names)), scores, color=colors)
+            ax.set_yticks(range(len(model_names)))
+            ax.set_yticklabels(model_names)
+            ax.set_xlabel('Test Score')
+            ax.set_title('AutoGluon Model Leaderboard (Top {})'.format(top_n),
+                         fontsize=14, fontweight='bold')
+            ax.invert_yaxis()
+
+            for bar, score in zip(bars, scores):
+                ax.text(bar.get_width() + 0.002, bar.get_y() + bar.get_height() / 2,
+                        f'{score:.4f}', va='center', fontsize=9)
 
             plt.tight_layout()
             img_b64 = plot_to_base64(fig)
 
             cells.append(create_code_cell(
-                "# Cross-validation comparison\n"
-                "fig, ax = plt.subplots(figsize=(10, 5))\n"
-                f"models = {models}\\n"
-                f"means = {means}\\n"
-                f"stds = {stds}\\n"
-                "ax.barh(range(len(models)), means, xerr=stds, color=plt.cm.viridis(np.linspace(0.2, 0.8, len(models))))\\n"
-                "ax.set_yticks(range(len(models)))\\n"
-                "ax.set_yticklabels(models)\\n"
-                "ax.set_xlabel('CV Score')\\n"
+                "# Leaderboard visualization\n"
+                "fig, ax = plt.subplots(figsize=(10, 6))\n"
+                f"models = {model_names}\n"
+                f"scores = {scores}\n"
+                "ax.barh(range(len(models)), scores, color=plt.cm.viridis(np.linspace(0.2, 0.8, len(models))))\n"
+                "ax.set_yticks(range(len(models)))\n"
+                "ax.set_yticklabels(models)\n"
+                "ax.set_xlabel('Test Score')\n"
+                "ax.set_title('Model Leaderboard')\n"
                 "plt.show()",
                 [create_image_output(img_b64)]
             ))
+
+    else:
+        # Legacy: manual training results (list of dicts)
+        if isinstance(training_results, list):
+            cells.append(create_markdown_cell(
+                "### 🤖 Models Trained\n\n"
+                "The following models were trained:\n"
+                + "\n".join([f"- {r['model_name']}" for r in training_results if r.get('success')])
+            ))
+
+        # Cross-validation results table
+        if cv_results:
+            cells.append(create_markdown_cell(
+                "### 📊 Cross-Validation Results\n\n"
+                "Cross-validation provides a more robust estimate of model performance by "
+                "training and evaluating on multiple data splits."
+            ))
+
+            cv_table_data = []
+            for name, cv in cv_results.items():
+                if cv.get('cv_scores') is not None:
+                    cv_table_data.append({
+                        'Model': name,
+                        'CV Mean': f"{cv['cv_mean']:.4f}",
+                        'CV Std': f"{cv['cv_std']:.4f}",
+                        'CV Min': f"{cv['cv_min']:.4f}",
+                        'CV Max': f"{cv['cv_max']:.4f}"
+                    })
+
+            if cv_table_data:
+                cv_df = pd.DataFrame(cv_table_data)
+                cv_html = cv_df.to_html(classes='table table-striped', border=0, index=False)
+                cells.append(create_code_cell(
+                    "# Cross-validation results summary\n"
+                    "import pandas as pd\n"
+                    "# Results summarized below",
+                    [{
+                        'output_type': 'execute_result',
+                        'data': {
+                            'text/html': [cv_html],
+                            'text/plain': [cv_df.to_string()]
+                        },
+                        'metadata': {},
+                        'execution_count': None
+                    }]
+                ))
+
+                # CV comparison chart
+                fig, ax = plt.subplots(figsize=(10, 5))
+                cv_models = [d['Model'] for d in cv_table_data]
+                means = [float(d['CV Mean']) for d in cv_table_data]
+                stds = [float(d['CV Std']) for d in cv_table_data]
+
+                colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(cv_models)))
+                bars = ax.barh(range(len(cv_models)), means, xerr=stds, color=colors, capsize=5)
+                ax.set_yticks(range(len(cv_models)))
+                ax.set_yticklabels(cv_models)
+                ax.set_xlabel('Cross-Validation Score')
+                ax.set_title(f'Model Comparison — {problem_type.title()}', fontsize=14, fontweight='bold')
+                ax.set_xlim(0, min(1.1, max(means) * 1.3))
+
+                for bar, mean, std in zip(bars, means, stds):
+                    ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
+                            f'{mean:.4f} ± {std:.4f}', va='center', fontsize=10)
+
+                plt.tight_layout()
+                img_b64 = plot_to_base64(fig)
+
+                cells.append(create_code_cell(
+                    "# Cross-validation comparison\n"
+                    "fig, ax = plt.subplots(figsize=(10, 5))\n"
+                    f"models = {cv_models}\\n"
+                    f"means = {means}\\n"
+                    f"stds = {stds}\\n"
+                    "ax.barh(range(len(models)), means, xerr=stds, color=plt.cm.viridis(np.linspace(0.2, 0.8, len(models))))\\n"
+                    "ax.set_yticks(range(len(models)))\\n"
+                    "ax.set_yticklabels(models)\\n"
+                    "ax.set_xlabel('CV Score')\\n"
+                    "plt.show()",
+                    [create_image_output(img_b64)]
+                ))
 
     return cells
 

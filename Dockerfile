@@ -1,11 +1,13 @@
-# ===== BlackBox AutoML Docker Image =====
-FROM python:3.11-slim
+# BlackBox AutoML - AutoGluon Edition
+FROM python:3.10-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies for AutoGluon
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
@@ -13,8 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy the rest of the application
 COPY . .
 
-# Default command (can be overridden)
-CMD ["python", "src/pipeline.py"]
+# Default command: run the pipeline
+ENTRYPOINT ["python", "src/pipeline.py"]
+CMD []

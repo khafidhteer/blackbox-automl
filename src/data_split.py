@@ -53,11 +53,37 @@ def auto_detect_target(df: pd.DataFrame) -> str:
     return target_col
 
 
-def split_features_target(df: pd.DataFrame, target_col: str = None) -> tuple:
+def split_features_target(df: pd.DataFrame, target_col: str = None,
+                          max_cardinality: int = 100) -> tuple:
     """
     Split DataFrame into X (features) and y (target).
     Automatically exclude non-numeric columns from features for model training,
     but keep track of them for reference.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The cleaned dataset.
+    target_col : str, optional
+        Target column name. Auto-detected if None.
+    max_cardinality : int, default 100
+        Maximum unique values for a categorical column to be included.
+        High-cardinality columns (e.g., IDs) are dropped.
+
+    Returns
+    -------
+    X : pd.DataFrame
+        Original features (with high-cardinality cols dropped).
+    X_encoded : pd.DataFrame
+        One-hot encoded features.
+    y : pd.Series
+        Target column.
+    target_col : str
+        Name of the target column.
+    numeric_cols : list
+        Numeric column names.
+    categorical_cols : list
+        Categorical column names (low-cardinality).
     """
     if target_col is None:
         target_col = auto_detect_target(df)
@@ -70,7 +96,20 @@ def split_features_target(df: pd.DataFrame, target_col: str = None) -> tuple:
 
     # Track which columns are numeric vs non-numeric
     numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-    categorical_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
+    all_categorical_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
+
+    # Drop high-cardinality categorical columns (likely IDs, emails, etc.)
+    dropped_high_card = []
+    categorical_cols = []
+    for col in all_categorical_cols:
+        if X[col].nunique() > max_cardinality:
+            dropped_high_card.append(col)
+        else:
+            categorical_cols.append(col)
+
+    # Remove high-cardinality columns from X
+    if dropped_high_card:
+        X = X.drop(columns=dropped_high_card)
 
     # For modeling, one-hot encode categorical features
     if categorical_cols:

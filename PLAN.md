@@ -3,6 +3,8 @@
 ## 🎯 Goal
 Build an automated ML pipeline where a user drops a CSV file into an `input/` folder, runs a single command (Docker or Python), and receives a fully documented Jupyter Notebook explaining every step: **data cleansing → data splitting → training → prediction → recommendations**.
 
+The ML engine is **[AutoGluon](https://auto.gluon.ai/)** — an industry-standard AutoML framework that automatically handles model selection, hyperparameter tuning, ensembling, and evaluation with minimal code.
+
 ---
 
 ## 📁 Repository Structure
@@ -18,8 +20,8 @@ blackbox-automl/
 │   ├── pipeline.py           # Main orchestration script
 │   ├── data_cleaning.py      # Data cleansing logic
 │   ├── data_split.py         # Train/test split logic
-│   ├── training.py           # Model training logic
-│   ├── prediction.py         # Prediction & evaluation
+│   ├── training.py           # AutoGluon model training 🧠
+│   ├── prediction.py         # AutoGluon evaluation & leaderboard
 │   ├── recommendation.py     # Model recommendation logic
 │   └── notebook_generator.py # Generates the final .ipynb file
 ├── templates/
@@ -54,20 +56,31 @@ blackbox-automl/
 - Auto-detect problem type (classification vs regression)
 - Train/test split (80/20 default, stratified for classification)
 
-### 4. **Training** → `src/training.py`
-- **Classification**: Logistic Regression, Random Forest, XGBoost, SVM
-- **Regression**: Linear Regression, Ridge, Lasso, Random Forest, XGBoost
-- Hyperparameter tuning via GridSearchCV (optional)
-- Cross-validation (k-fold)
+### 4. **Training** → `src/training.py` (AutoGluon-powered)
+- Uses **AutoGluon `TabularPredictor`** as the ML engine
+- Automatically detects problem type (classification / regression)
+- **Lightweight-first progressive model strategy**:
+
+| Mode | CLI Flag | Models Trained | Time / Resources |
+|------|----------|----------------|------------------|
+| **Lightweight** (default) | *(none)* | LinearModel, LightGBM (fast), CatBoost (small), XGBoost (small), RandomForest (small) | Fast (~1-5 min), low RAM |
+| **Balanced** | `--quality balanced` | All default + medium ensembles, extra k-fold | Moderate (~5-15 min) |
+| **Best Quality** | `--quality best` | Full suite: Neural Networks, stacking, deep ensembles, extra trees | High (~15-60+ min), high RAM |
+
+- Hyperparameter tuning is built into AutoGluon's model training
+- No manual GridSearchCV or cross-validation loops needed
 
 ### 5. **Prediction & Evaluation** → `src/prediction.py`
-- Generate predictions on test set
+- Uses AutoGluon's built-in evaluation:
+  - `predictor.leaderboard()` — display all model results with metrics
+  - `predictor.evaluate()` — comprehensive scoring
+  - `predictor.feature_importance()` — permutation-based importance
 - Classification metrics: Accuracy, Precision, Recall, F1, Confusion Matrix, ROC-AUC
 - Regression metrics: MAE, MSE, RMSE, R²
-- Feature importance extraction
+- Best model automatically selected from leaderboard
 
 ### 6. **Recommendations** → `src/recommendation.py`
-- Select best performing model
+- Select best performing model from AutoGluon leaderboard
 - Generate natural language insights
 - Performance improvement suggestions
 - Overall verdict (Outstanding/Great/Good/Fair/Poor)
@@ -85,14 +98,15 @@ blackbox-automl/
 1. Clone repo
 2. Copy CSV file → input/ folder
 3. Run: docker-compose up --build
-   OR: python src/pipeline.py
+   OR: python src/pipeline.py [--quality balanced|best] [--target COLUMN]
 4. Open output/automl_report.ipynb in Jupyter/VSCode
 ```
 
 ---
 
 ## 📦 Dependencies
-- pandas, numpy, scikit-learn, matplotlib, seaborn, xgboost, nbformat, jupyter
+- **autogluon** (bundles pandas, numpy, scikit-learn, xgboost, lightgbm, catboost)
+- matplotlib, seaborn, nbformat, jupyter
 
 ---
 
@@ -101,15 +115,15 @@ blackbox-automl/
 - [x] Project structure and .gitignore
 - [x] src/data_cleaning.py — data loading, missing values, duplicates, outliers
 - [x] src/data_split.py — feature/target split, train/test split, problem type detection
-- [x] src/training.py — multi-model training, cross-validation, hyperparameter tuning
-- [x] src/prediction.py — evaluation metrics, feature importance, best model selection
-- [x] src/recommendation.py — natural language recommendations and insights
+- [ ] src/training.py — **Rewrite with AutoGluon TabularPredictor**
+- [ ] src/prediction.py — **Rewrite with AutoGluon leaderboard/evaluate**
+- [ ] src/recommendation.py — **Rewrite with AutoGluon metadata**
 - [x] src/notebook_generator.py — full .ipynb generation with embedded plots
-- [x] src/pipeline.py — main orchestrator tying everything together
+- [ ] src/pipeline.py — **Simplify orchestration with AutoGluon API**
 - [x] templates/report_template.ipynb.json — notebook skeleton
-- [x] requirements.txt — all Python dependencies
-- [x] Dockerfile — container definition
+- [ ] requirements.txt — **Replace scikit-learn + xgboost → autogluon**
+- [ ] Dockerfile — **Update pip install for autogluon**
 - [x] docker-compose.yml — one-command Docker setup
-- [x] README.md — comprehensive usage documentation
+- [ ] README.md — **Reflect AutoGluon usage**
 - [x] PLAN.md — this planning document
 - [x] Git repository initialized
