@@ -8,6 +8,7 @@ import os
 import sys
 import argparse
 import glob
+import pickle
 import pandas as pd
 import warnings
 warnings.filterwarnings('ignore')
@@ -198,10 +199,40 @@ def main():
     if 'overall_verdict' in recommendations:
         print(f"   {recommendations['overall_verdict'][:80]}...")
 
+    # ========== Save pipeline state for notebook re-execution ==========
+    saved_state_path = os.path.join(output_dir, 'pipeline_state.pkl') if output_dir else 'pipeline_state.pkl'
+    with open(saved_state_path, 'wb') as f:
+        pickle.dump({
+            'predictor': train_results['predictor'],
+            'leaderboard': train_results['leaderboard'],
+        }, f)
+    print(f"   💾 Pipeline state saved to: {saved_state_path}")
+
     # ========== STEP 6: Generate Notebook ==========
     print("\n" + "─" * 40)
     print("  Step 6: Generating Notebook")
     print("─" * 40)
+
+    # Compute a relative path for the CSV that works when notebook is run from repo root
+    abs_output_dir = os.path.abspath(output_dir) if output_dir else os.path.abspath('.')
+    abs_csv_path = os.path.abspath(csv_path)
+    try:
+        csv_rel_path = os.path.relpath(abs_csv_path, abs_output_dir)
+    except ValueError:
+        csv_rel_path = csv_path  # fallback to absolute path if on different drives
+
+    # Map quality flag to AutoGluon preset name
+    quality_preset_map = {
+        'lightweight': 'medium_quality_faster_train',
+        'balanced': 'medium_quality',
+        'best': 'best_quality',
+    }
+    ag_preset = quality_preset_map.get(args.quality, 'medium_quality_faster_train')
+
+    # Map problem type to notebook display type
+    nb_problem_type = split_data['problem_type']
+    if nb_problem_type == 'classification':
+        nb_problem_type = 'binary' if split_data['y'].nunique() == 2 else 'multiclass'
 
     output_path = generate_notebook(
         df_clean=df_clean,
@@ -213,7 +244,14 @@ def main():
         eval_results=eval_results,
         recommendations=recommendations,
         output_path=args.output,
-        dataset_name=dataset_name
+        dataset_name=dataset_name,
+        csv_path_for_nb=csv_rel_path,
+        target_col=args.target,
+        problem_type=nb_problem_type,
+        quality_preset=ag_preset,
+        time_limit=args.time_limit,
+        seed=42,
+        test_size=args.test_size,
     )
 
     # ========== CLEANUP: Remove AutoGluon temp model dir ==========

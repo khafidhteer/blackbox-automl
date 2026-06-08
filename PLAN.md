@@ -92,9 +92,21 @@ blackbox-automl/
 
 ### 7. **Notebook Generator** → `src/notebook_generator.py`
 - Reads template `.ipynb` JSON
-- Populates with markdown explanations + code cells + embedded visualizations
+- Populates with **markdown explanations** + **executable Python code cells** + **embedded visualizations (base64 images)**
 - Handles both AutoGluon-style training results (dict with `predictor`/`leaderboard`) and legacy format
 - Each section has both explanatory text and executed results
+- **🔑 Key Requirement — Fully Executable Notebook**: Unlike a static report, every code cell must contain **actual, runnable Python code** — not skeleton or placeholder code. The notebook must be fully executable end-to-end by the user in Jupyter/VSCode.
+  - **Data Loading**: Code cell reads the actual CSV file from `input/` using `pd.read_csv()` with a user-configurable path
+  - **Data Cleaning**: Code performs missing value handling (median/mode imputation), duplicate removal, and IQR-based outlier capping directly — not just displays pre-computed results
+  - **EDA**: Code generates statistics via `df.describe()`, correlation heatmaps, and distribution plots using matplotlib/seaborn directly
+  - **Data Splitting**: Code performs train/test split using `sklearn.model_selection.train_test_split()`, detects problem type automatically, and handles high-cardinality column exclusion
+  - **Training**: Code instantiates and runs **AutoGluon `TabularPredictor`** with the specified quality preset and time limit (e.g., `TabularPredictor(label=target_col, problem_type=problem_type).fit(X_train, presets=presets)`)
+  - **Evaluation**: Code calls `predictor.leaderboard()`, `predictor.evaluate()`, and `predictor.feature_importance()` directly against the test set
+  - **Recommendations**: Code analyzes model performance from the leaderboard and generates insights programmatically
+- **Output Pre-population (optional)**: Pre-computed outputs (text, images, dataframes) are embedded as cell _outputs_ so the notebook looks complete on first open, but the code is real and can be re-executed to regenerate results
+- **Idempotency**: Running all cells from top to bottom must produce equivalent results without errors
+- **CSV Path Handling**: The notebook accepts the CSV path as a variable at the top of the notebook (e.g., `CSV_PATH = "../input/dataset.csv"`) for easy user modification, with a relative path that works when the notebook is opened from the repo root
+- **Runtime Mode**: Because AutoGluon training can take significant time when re-executed, the notebook includes a configurable `RUN_TRAINING = False` flag at the top — when `False`, cells load pre-computed results; when `True`, the notebook re-runs the full pipeline
 
 ---
 
@@ -137,9 +149,9 @@ blackbox-automl/
 - [x] src/training.py — **AutoGluon TabularPredictor with binary/multiclass mapping, lightweight-first presets**
 - [x] src/prediction.py — **AutoGluon leaderboard, per-model evaluation, feature importance**
 - [x] src/recommendation.py — **AutoGluon-aware recommendations with quality escalation suggestions**
-- [x] src/notebook_generator.py — full .ipynb generation handling both AutoGluon and legacy formats
-- [x] src/pipeline.py — **Simplified orchestration with `--quality` and `--time-limit` flags**
-- [x] templates/report_template.ipynb.json — notebook skeleton
+- [x] src/notebook_generator.py — **✅ REWORK COMPLETE: all code cells now contain fully executable Python code**
+- [x] src/pipeline.py — **✅ Updated to pass new params, save pipeline state for notebook re-execution**
+- [x] templates/report_template.ipynb.json — notebook skeleton (no changes needed)
 - [x] requirements.txt — **autogluon.tabular** (core ML engine) + visualization + notebook
 - [x] Dockerfile — Slim Python 3.10 image with autogluon.tabular
 - [x] docker-compose.yml — one-command Docker setup
@@ -152,3 +164,32 @@ blackbox-automl/
 - **Dataset**: Telco Customer Churn (7043 rows, 21 columns, binary classification)
 - **Result**: 5 models trained in ~180s, best accuracy 0.797 (WeightedEnsemble_L2)
 - **Output**: Full Jupyter notebook at `output/automl_report.ipynb` (309 KB)
+
+---
+
+## 📋 Action Items — `src/notebook_generator.py` Rework for Executable Notebooks
+
+The following changes are needed to `src/notebook_generator.py` so that the generated `.ipynb` is a fully executable notebook rather than a static report.
+
+### ✅ All Action Items Completed
+
+All the changes described in the action items above have been implemented in:
+
+| File | What Changed |
+|------|-------------|
+| `src/notebook_generator.py` | All section generators now output fully executable Python code instead of skeleton/placeholder code. Added config header, real cleaning code, live EDA computation, executable split/train/eval/recommendation cells. |
+| `src/pipeline.py` | Now saves pipeline state (predictor + leaderboard) to `output/pipeline_state.pkl` for notebook re-execution. Passes all new parameters (`csv_path_for_nb`, `target_col`, `problem_type`, `quality_preset`, `time_limit`, `seed`, `test_size`) to `generate_notebook()`. Computes relative CSV path for notebook portability. |
+| `templates/report_template.ipynb.json` | No changes needed — template structure was already correct. |
+
+#### Notebook Executability Summary
+
+| Section | Before | After |
+|---------|--------|-------|
+| **Config** | (missing) | First code cell with `CSV_PATH`, `TARGET_COL`, `PROBLEM_TYPE`, `QUALITY_PRESET`, `TIME_LIMIT`, `RUN_TRAINING`, `SEED`, `TEST_SIZE` |
+| **Data Loading** | Hardcoded `info['shape']` strings | `pd.read_csv(CSV_PATH)` with live `df.shape`, `df.duplicated()`, `df.dtypes` |
+| **Data Cleaning** | Pre-computed markdown only | Executable `fillna()`, `drop_duplicates()`, IQR clipping with `print()` output |
+| **EDA** | `\\n` escaped newlines, hardcoded `numeric_cols` | Real `df.select_dtypes()`, proper newlines, live plot generation |
+| **Data Splitting** | Markdown-only descriptions | Executable target detection, `train_test_split()`, auto problem type detection |
+| **Training** | `predictor` not defined in notebook scope | Real `TabularPredictor(...).fit(...)` with `RUN_TRAINING` toggle + serialized state loading |
+| **Evaluation** | `# Results summarized below` placeholders | Real `accuracy_score()`, `confusion_matrix()`, `predictor.feature_importance()` calls |
+| **Recommendations** | `# Results displayed below` placeholders | Code reads from `leaderboard` DataFrame, evaluates thresholds, prints actionable suggestions |

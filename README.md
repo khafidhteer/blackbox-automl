@@ -64,7 +64,7 @@ BlackBox AutoML uses **AutoGluon** as its core ML engine. AutoGluon is a state-o
 | 3️⃣ | **Split Data** — auto-detects target column & problem type, splits 80/20 | Reserves unseen data for honest evaluation |
 | 4️⃣ | **Train Models** — AutoGluon trains multiple models, tunes hyperparameters, builds ensembles | Finds the best predictor without manual trial-and-error |
 | 5️⃣ | **Evaluate** — computes metrics, confusion matrix, residual plots, feature importance | Shows you exactly how each model performs |
-| 6️⃣ | **Generate Notebook** — produces a self-contained .ipynb with all results | You get a complete, shareable report — no coding needed |
+| 6️⃣ | **Generate Notebook** — produces a fully **executable** .ipynb with all results and live Python code | You get a complete, shareable report that you can re-run on new data by changing just one variable |
 
 ---
 
@@ -151,6 +151,37 @@ blackbox-automl/
 - **[autogluon.tabular](https://auto.gluon.ai/)** — Core AutoML engine (includes pandas, numpy, scikit-learn, xgboost, lightgbm)
 - **matplotlib** + **seaborn** — Charts and visualizations in the report
 - **nbformat** + **jupyter** — Notebook generation and viewing
+
+---
+
+## 📓 Working with the Generated Notebook
+
+The notebook saved to `output/automl_report.ipynb` is **fully executable** — every code cell contains real, runnable Python code. Pre-computed outputs (charts, tables, text) are embedded so the notebook looks complete on first open, but you can also re-run everything.
+
+### First Cell — Configuration
+The very first code cell in the notebook contains all adjustable settings:
+
+```python
+CSV_PATH = "Telco-Customer-Churn.csv"   # Change this to point to a different file
+TARGET_COL = None                        # None = auto-detect
+PROBLEM_TYPE = None                      # None = auto-detect
+QUALITY_PRESET = "medium_quality_faster_train"
+TIME_LIMIT = None                        # None = no limit
+RUN_TRAINING = True                      # Set to False to use saved results
+SEED = 42
+TEST_SIZE = 0.2
+```
+
+### Re-run on a Different Dataset
+1. Change `CSV_PATH` to point to your new CSV file
+2. Set `RUN_TRAINING = True`
+3. Run all cells (Cell → Run All)
+4. The pipeline will re-execute end-to-end on the new data
+
+### View Without Re-training
+The notebook contains pre-computed outputs from the pipeline run that generated it. To view results without waiting for training:
+- Leave `RUN_TRAINING = True` — the notebook will automatically train models
+- Or set `RUN_TRAINING = False` to load saved results from `output/pipeline_state.pkl` (if available)
 
 ---
 
