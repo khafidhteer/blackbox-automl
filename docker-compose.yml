@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  automl:
+    build: .
+    container_name: blackbox-automl
+    volumes:
+      # Mount input folder so you can add CSV files from your host
+      - ./input:/app/input
+      # Mount output folder to get the generated notebook on your host
+      - ./output:/app/output
+    # Default command (runs pipeline with auto-detection)
+    command: python src/pipeline.py
+    # To override with a specific file:
+    # command: python src/pipeline.py --input /app/input/your_file.csv --tune
